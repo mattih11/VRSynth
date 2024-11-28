@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, height=device-height, initial-scale=1, user-scalable=no">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Wave Synthesizer</title>
+  <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/gh/chenzlabs/aframe-dragndrop@v1.0.0/dist/aframe-dragndrop.min.js"></script>
+</head>
+<body>
+  <a-scene vr-mode-ui="enabled: true">
+    <!-- Camera with Cursor -->
+    <a-entity position="0 1.6 4">
+      <a-camera>
+        <a-cursor raycaster="objects: .clickable" fuse="false" material="color: yellow; shader: flat"></a-cursor>
+      </a-camera>
+    </a-entity>
+
+    <!-- Light -->
+    <a-light type="ambient" color="#ffffff"></a-light>
+
+    <!-- Synthesizer Blocks -->
+    <a-entity id="synthesizer" wave-synthesizer></a-entity>
+
+    <!-- Plus Block -->
+    <a-box position="0 0.5 -3" width="0.5" height="0.5" depth="0.5" color="#FFFFFF"></a-box>
+
+    <!-- Ground -->
+    <a-plane rotation="-90 0 0" width="10" height="10" color="#7BC8A4"></a-plane>
+
+    <!-- Controller input -->
+    <a-entity id="controller-left" laser-controls="hand: left" raycaster="objects: .clickable"></a-entity>
+    <a-entity id="controller-right" laser-controls="hand: right" raycaster="objects: .clickable"></a-entity>
+  </a-scene>
+
+  <script>
+    AFRAME.registerComponent('wave-synthesizer', {
+      schema: {},
+
+      init: function () {
+        const sceneEl = this.el.sceneEl;
+
+        // Audio context and oscillators
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        let oscillators = {};
+        let gainNodes = {};
+        this.currentBlock = null;
+
+        // Waveform Visualization
+        const waveformLines = {};
+
+        // Helper to create a block
+        const createWaveBlock = (type, x, y, z) => {
+          const block = document.createElement('a-box');
+          block.setAttribute('position', `${x} ${y} ${z}`);
+          block.setAttribute('width', '0.5');
+          block.setAttribute('height', '0.5');
+          block.setAttribute('depth', '0.5');
+          block.setAttribute('color', type === 'sine' ? '#0077FF' : type === 'square' ? '#FF7700' : '#00FF77');
+          block.setAttribute('class', 'clickable draggable');
+          block.setAttribute('dragndrop', 'enabled: true');
+
+          // State and behavior
+          let isActive = false;
+
+          // Hover effect
+          block.addEventListener('raycaster-intersected', () => {
+            block.setAttribute('animation__hover', {
+              property: 'scale',
+              to: '0.55 0.55 0.55',
+              dur: 150,
+              easing: 'easeInOutQuad',
+            });
+          });
+
+          block.addEventListener('raycaster-intersected-cleared', () => {
+            block.removeAttribute('animation__hover');
+            block.setAttribute('scale', '0.5 0.5 0.5');
+          });
+
+          // Toggle wave generation
+          block.addEventListener('click', () => {
+            isActive = !isActive;
+
+            if (isActive) {
+              block.setAttribute('color', '#00FF00');
+              // Add oscillator and gain node
+              const oscillator = audioContext.createOscillator();
+              const gainNode = audioContext.createGain();
+              oscillator.type = type;
+              oscillator.frequency.value = 440; // Set base frequency
+              oscillator.connect(gainNode);
+              gainNode.connect(audioContext.destination);
+              gainNode.gain.value = 0.5; // Set initial volume
+              oscillator.start();
+              oscillators[type] = oscillator;
+              gainNodes[type] = gainNode;
+
+              // Create waveform line
+              const line = document.createElement('a-entity');
+              waveformLines[type] = line;
+              sceneEl.appendChild(line);
+            } else {
+              block.setAttribute('color', type === 'sine' ? '#0077FF' : type === 'square' ? '#FF7700' : '#00FF77');
+              // Stop and remove oscillator
+              if (oscillators[type]) {
+                oscillators[type].stop();
+                delete oscillators[type];
+                delete gainNodes[type];
+              }
+              // Remove waveform line
+              if (waveformLines[type]) {
+                sceneEl.removeChild(waveformLines[type]);
+                delete waveformLines[type];
+              }
+            }
+
+            updateSummation();
+          });
+
+          // Drag effect for frequency adjustment
+          block.addEventListener('componentchanged', function (evt) {
+            if (evt.detail.name === 'position' && oscillators[type]) {
+              const newPosition = block.getAttribute('position');
+              const frequency = 440 + newPosition.y * 100; // Adjust frequency by position
+              oscillators[type].frequency.value = frequency;
+              updateSummation();
+            }
+          });
+
+          // Rotation effect for volume adjustment
+          block.addEventListener('componentchanged', function (evt) {
+            if (evt.detail.name === 'rotation' && gainNodes[type]) {
+              const newRotation = block.getAttribute('rotation');
+              const volume = Math.abs(newRotation.x) / 90; // Adjust volume by rotation
+              gainNodes[type].gain.value = Math.max(0, Math.min(1, volume)); // Keep volume within 0 to 1 range
+              updateSummation();
+            }
+          });
+
+          // Handle mouse and controller input for dragging and rotating
+          block.addEventListener('mousedown', () => {
+            this.currentBlock = block; // Use this.currentBlock
+          });
+
+          block.addEventListener('mouseup', () => {
+            this.currentBlock = null; // Use this.currentBlock
+          });
+
+          sceneEl.appendChild(block);
+        };
+
+        // Update the synthesized wave summation and visualization
+        const updateSummation = () => {
+          const activeTypes = Object.keys(oscillators);
+          const plusBlockPosition = { x: 0, y: 0.5, z: -3 }; // Position of the plus block
+          
+          activeTypes.forEach(type => {
+            const block = sceneEl.querySelector(`[color="${type === 'sine' ? '#0077FF' : type === 'square' ? '#FF7700' : '#00FF77'}"]`);
+            if (block && waveformLines[type]) {
+              const startPosition = block.getAttribute('position');
+              waveformLines[type].setAttribute('line', {
+                start: `${startPosition.x} ${startPosition.y} ${startPosition.z}`,
+                end: `${plusBlockPosition.x} ${plusBlockPosition.y} ${plusBlockPosition.z}`,
+                color: block.getAttribute('color')
+              });
+            }
+          });
+
+          if (activeTypes.length > 0) {
+            console.log('Synthesized Wave:', activeTypes.join(' + '));
+          } else {
+            console.log('No active waveforms');
+          }
+        };
+
+        // Create wave blocks
+        createWaveBlock('sine', -1, 1, -3);
+        createWaveBlock('square', 0, 1, -3);
+        createWaveBlock('sawtooth', 1, 1, -3);
+      },
+
+      tick: function (time, timeDelta) {
+        if (this.currentBlock) {
+          const controllerElRight = document.querySelector('#controller-right');
+          const controllerElLeft = document.querySelector('#controller-left');
+          
+          if (controllerElRight) {
+            const position = controllerElRight.getAttribute('position');
+            this.currentBlock.setAttribute('position', {
+              x: this.currentBlock.getAttribute('position').x,
+              y: position.y,
+              z: this.currentBlock.getAttribute('position').z
+            });
+          }
+          
+          if (controllerElLeft) {
+            const rotation = controllerElLeft.getAttribute('rotation');
+            this.currentBlock.setAttribute('rotation', rotation);
+          }
+        }
+      }
+    });
+
+    AFRAME.registerComponent('controller-input', {
+      init: function () {
+        const leftControllerEl = document.querySelector('#controller-left');
+        const rightControllerEl = document.querySelector('#controller-right');
+        let activeBlock = null;
+
+        // Handle right controller for dragging (frequency)
+        rightControllerEl.addEventListener('triggerdown', () => {
+          const intersectedEl = rightControllerEl.components.raycaster.intersectedEls[0];
+          if (intersectedEl && intersectedEl.classList.contains('draggable')) {
+            activeBlock = intersectedEl;
+          }
+        });
+
+        rightControllerEl.addEventListener('triggerup', () => {
+          activeBlock = null;
+        });
+
+        // Handle left controller for rotating (volume)
+        leftControllerEl.addEventListener('triggerdown', () => {
+          const intersectedEl = leftControllerEl.components.raycaster.intersectedEls[0];
+          if (intersectedEl && intersectedEl.classList.contains('draggable')) {
+            activeBlock = intersectedEl;
+          }
+        });
+
+        leftControllerEl.addEventListener('triggerup', () => {
+          activeBlock = null;
+        });
+
+        // Update block positions and rotations based on controller input
+        this.el.sceneEl.addEventListener('axismove', (evt) => {
+          const { hand } = evt.target;
+          if (activeBlock) {
+            if (hand === 'right') {
+              const position = evt.detail.axis;
+              activeBlock.setAttribute('position', {
+                x: activeBlock.getAttribute('position').x,
+                y: position[1] * 5, // Adjust y for frequency
+                z: activeBlock.getAttribute('position').z
+              });
+            } else if (hand === 'left') {
+              const rotation = evt.detail.axis;
+              activeBlock.setAttribute('rotation', {
+                x: rotation[0] * 360, // Adjust x for volume
+                y: activeBlock.getAttribute('rotation').y,
+                z: activeBlock.getAttribute('rotation').z
+              });
+            }
+          }
+        });
+      }
+    });
+
+    // Initialize the components
+    AFRAME.registerComponent('synthesizer', AFRAME.components['wave-synthesizer']);
+    AFRAME.registerComponent('controller', AFRAME.components['controller-input']);
+  </script>
+</body>
+</html>
+
